@@ -1,0 +1,5 @@
+{
+  "name": "DuoBalance - Gestão de Despesas em Casal",
+  "description": "Uma aplicação elegante para gerir despesas partilhadas entre Ricardo e Rafaela, com suporte para fecho de contas por períodos e histórico reversível.",
+  "requestFramePermissions": []
+}
