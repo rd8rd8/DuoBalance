@@ -48,29 +48,41 @@ const App: React.FC = () => {
     type: 'info'
   });
 
-  // Fetch Data
-  useEffect(() => {
-    // Run setup once just in case (optional, but good for first run)
-    // In a real app, this might be a separate init step.
-    fetch('/setup-db').catch(() => {});
+  // Fetch Data Logic
+  const fetchData = async (isInitial = false) => {
+    try {
+      const res = await fetch('/api/data');
+      if (!res.ok) throw new Error('Failed to fetch');
+      const data = await res.json();
+      
+      if (data && !data.error) {
+          setState(prev => ({
+              ...prev,
+              expenses: data.expenses || [],
+              batches: data.batches || [],
+              categories: data.categories || []
+          }));
+      }
+    } catch (err) {
+      console.error("Failed to load data", err);
+    } finally {
+      if (isInitial) setLoading(false);
+    }
+  };
 
-    fetch('/api/data')
-      .then(res => res.json())
-      .then(data => {
-        if (data && !data.error) {
-            setState({
-                expenses: data.expenses || [],
-                batches: data.batches || [],
-                categories: data.categories || [],
-                users: INITIAL_STATE.users
-            });
+  useEffect(() => {
+    // Initial setup
+    fetch('/setup-db').catch(() => {});
+    fetchData(true);
+
+    // Polling for real-time updates (every 3 seconds)
+    const intervalId = setInterval(() => {
+        if (document.visibilityState === 'visible') {
+            fetchData();
         }
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error("Failed to load data", err);
-        setLoading(false);
-      });
+    }, 3000);
+
+    return () => clearInterval(intervalId);
   }, []);
 
   // Calculations for current period (aberto)
