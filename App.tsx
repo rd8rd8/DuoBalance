@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Plus, 
@@ -20,16 +19,15 @@ import {
   CalendarDays,
   ChevronDown,
   ChevronUp,
-  Eye
+  Eye,
+  Loader2
 } from 'lucide-react';
 import { Expense, Batch, Category, Payer, AppState } from './types';
-import { INITIAL_STATE, LOCAL_STORAGE_KEY } from './constants';
+import { INITIAL_STATE } from './constants';
 
 const App: React.FC = () => {
-  const [state, setState] = useState<AppState>(() => {
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-    return saved ? JSON.parse(saved) : INITIAL_STATE;
-  });
+  const [state, setState] = useState<AppState>(INITIAL_STATE);
+  const [loading, setLoading] = useState(true);
 
   const [view, setView] = useState<'main' | 'history' | 'stats' | 'settings'>('main');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -50,10 +48,30 @@ const App: React.FC = () => {
     type: 'info'
   });
 
-  // Persistence
+  // Fetch Data
   useEffect(() => {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(state));
-  }, [state]);
+    // Run setup once just in case (optional, but good for first run)
+    // In a real app, this might be a separate init step.
+    fetch('/setup-db').catch(() => {});
+
+    fetch('/api/data')
+      .then(res => res.json())
+      .then(data => {
+        if (data && !data.error) {
+            setState({
+                expenses: data.expenses || [],
+                batches: data.batches || [],
+                categories: data.categories || [],
+                users: INITIAL_STATE.users
+            });
+        }
+        setLoading(false);
+      })
+      .catch(err => {
+        console.error("Failed to load data", err);
+        setLoading(false);
+      });
+  }, []);
 
   // Calculations for current period (aberto)
   const totals = useMemo(() => {
@@ -122,23 +140,48 @@ const App: React.FC = () => {
     setConfirmDialog({ isOpen: true, title, message, onConfirm, type });
   };
 
-  const addExpense = (expense: Omit<Expense, 'id' | 'createdAt'>) => {
+  const addExpense = async (expense: Omit<Expense, 'id' | 'createdAt'>) => {
     const newExpense: Expense = {
       ...expense,
       id: crypto.randomUUID(),
       createdAt: Date.now()
     };
-    setState(prev => ({ ...prev, expenses: [newExpense, ...prev.expenses] }));
-    setIsModalOpen(false);
+    
+    try {
+        const res = await fetch('/api/expenses', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newExpense)
+        });
+        if (res.ok) {
+            setState(prev => ({ ...prev, expenses: [newExpense, ...prev.expenses] }));
+            setIsModalOpen(false);
+        } else {
+            alert('Erro ao salvar despesa. Tente novamente.');
+        }
+    } catch (e) {
+        console.error(e);
+        alert('Erro de conexão.');
+    }
   };
 
   const deleteExpense = (id: string) => {
     triggerConfirm(
       'Apagar Despesa',
       'Deseja apagar esta despesa permanentemente?',
-      () => {
-        setState(prev => ({ ...prev, expenses: prev.expenses.filter(e => e.id !== id) }));
-        setConfirmDialog(p => ({ ...p, isOpen: false }));
+      async () => {
+        try {
+            const res = await fetch(`/api/expenses/${id}`, { method: 'DELETE' });
+            if (res.ok) {
+                setState(prev => ({ ...prev, expenses: prev.expenses.filter(e => e.id !== id) }));
+                setConfirmDialog(p => ({ ...p, isOpen: false }));
+            } else {
+                alert('Erro ao apagar despesa.');
+            }
+        } catch (e) {
+            console.error(e);
+            alert('Erro de conexão.');
+        }
       },
       'danger'
     );
@@ -154,11 +197,11 @@ const App: React.FC = () => {
     triggerConfirm(
       'Fechar Contas',
       msg,
-      () => {
+      async () => {
         const newBatch: Batch = {
           id: crypto.randomUUID(),
           name: `Fecho de ${new Date().toLocaleDateString('pt-PT')}`,
-          expenses: [...state.expenses],
+          expenses: [...state.expenses], // Note: API will handle moving expenses based on ID, but we keep this for local update
           settledAt: Date.now(),
           totalRicardo: totals.ricardoTotal,
           totalRafaela: totals.rafaelaTotal,
@@ -166,13 +209,29 @@ const App: React.FC = () => {
           payerWhoOwes: totals.whoOwes
         };
 
-        setState(prev => ({
-          ...prev,
-          expenses: [],
-          batches: [newBatch, ...prev.batches]
-        }));
-        setView('history');
-        setConfirmDialog(p => ({ ...p, isOpen: false }));
+        try {
+            // Send only metadata to API, it will move active expenses to this batch
+            const res = await fetch('/api/batches', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newBatch)
+            });
+
+            if (res.ok) {
+                setState(prev => ({
+                  ...prev,
+                  expenses: [],
+                  batches: [newBatch, ...prev.batches]
+                }));
+                setView('history');
+                setConfirmDialog(p => ({ ...p, isOpen: false }));
+            } else {
+                alert('Erro ao fechar contas.');
+            }
+        } catch (e) {
+            console.error(e);
+            alert('Erro de conexão.');
+        }
       },
       'warning'
     );
@@ -182,23 +241,34 @@ const App: React.FC = () => {
     triggerConfirm(
       'Reverter Fecho',
       'As despesas deste período voltarão para a lista principal. Continuar?',
-      () => {
+      async () => {
         const batch = state.batches.find(b => b.id === batchId);
         if (!batch) return;
 
-        setState(prev => ({
-          ...prev,
-          expenses: [...batch.expenses, ...prev.expenses].sort((a, b) => b.createdAt - a.createdAt),
-          batches: prev.batches.filter(b => b.id !== batchId)
-        }));
-        setView('main');
-        setConfirmDialog(p => ({ ...p, isOpen: false }));
+        try {
+            const res = await fetch(`/api/batches/${batchId}`, { method: 'DELETE' });
+            
+            if (res.ok) {
+                setState(prev => ({
+                  ...prev,
+                  expenses: [...batch.expenses, ...prev.expenses].sort((a, b) => b.createdAt - a.createdAt),
+                  batches: prev.batches.filter(b => b.id !== batchId)
+                }));
+                setView('main');
+                setConfirmDialog(p => ({ ...p, isOpen: false }));
+            } else {
+                alert('Erro ao reverter fecho.');
+            }
+        } catch (e) {
+            console.error(e);
+            alert('Erro de conexão.');
+        }
       },
       'info'
     );
   };
 
-  const addCategory = (name: string) => {
+  const addCategory = async (name: string) => {
     const colors = [
       'bg-blue-100 text-blue-700',
       'bg-orange-100 text-orange-700',
@@ -212,20 +282,89 @@ const App: React.FC = () => {
       name,
       color: colors[state.categories.length % colors.length]
     };
-    setState(prev => ({ ...prev, categories: [...prev.categories, newCategory] }));
+
+    try {
+        const res = await fetch('/api/categories', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newCategory)
+        });
+
+        if (res.ok) {
+            setState(prev => ({ ...prev, categories: [...prev.categories, newCategory] }));
+        } else {
+            alert('Erro ao adicionar categoria.');
+        }
+    } catch (e) {
+        console.error(e);
+        alert('Erro de conexão.');
+    }
   };
 
   const deleteCategory = (id: string) => {
     triggerConfirm(
       'Apagar Categoria',
       'As despesas associadas perderão a categoria, mas não serão apagadas.',
-      () => {
-        setState(prev => ({ ...prev, categories: prev.categories.filter(c => c.id !== id) }));
-        setConfirmDialog(p => ({ ...p, isOpen: false }));
+      async () => {
+        try {
+            const res = await fetch(`/api/categories/${id}`, { method: 'DELETE' });
+            
+            if (res.ok) {
+                setState(prev => ({ ...prev, categories: prev.categories.filter(c => c.id !== id) }));
+                setConfirmDialog(p => ({ ...p, isOpen: false }));
+            } else {
+                alert('Erro ao apagar categoria.');
+            }
+        } catch (e) {
+            console.error(e);
+            alert('Erro de conexão.');
+        }
       },
       'danger'
     );
   };
+
+  const resetData = () => {
+      triggerConfirm(
+        'RESETE TOTAL',
+        'Atenção: Irá apagar TODAS as despesas e histórico. Esta ação é irreversível!',
+        async () => {
+            try {
+                const res = await fetch('/api/reset', { method: 'DELETE' });
+                if (res.ok) {
+                    // Reset to initial state, but reload to get default categories back if we deleted them?
+                    // The API `DELETE /reset` deletes all categories too.
+                    // But `setup-db` (called on mount) restores them.
+                    // So we can just set state to initial, or reload window.
+                    // Let's set state to INITIAL.
+                    setState(INITIAL_STATE);
+                    setView('main');
+                    setConfirmDialog(p => ({ ...p, isOpen: false }));
+                    
+                    // Trigger setup again to restore default categories in DB
+                    fetch('/setup-db');
+                } else {
+                    alert('Erro ao resetar dados.');
+                }
+            } catch (e) {
+                console.error(e);
+                alert('Erro de conexão.');
+            }
+        },
+        'danger'
+      );
+  }
+
+  if (loading) {
+      return (
+          <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-400">
+              <div className="flex flex-col items-center gap-2">
+                  <Loader2 size={32} className="animate-spin text-indigo-600" />
+                  <p className="text-xs font-bold uppercase tracking-widest">Carregando...</p>
+              </div>
+          </div>
+      );
+  }
 
   return (
     <div className="max-w-md mx-auto min-h-screen bg-slate-50 flex flex-col pb-24 shadow-2xl text-slate-900 border-x border-slate-200">
@@ -562,18 +701,7 @@ const App: React.FC = () => {
             <div className="bg-white rounded-[2rem] p-6 shadow-sm border border-red-50 space-y-4">
               <h3 className="text-xs font-black text-red-500 uppercase tracking-widest">Manutenção</h3>
               <button 
-                onClick={() => {
-                  triggerConfirm(
-                    'RESETE TOTAL',
-                    'Atenção: Irá apagar TODAS as despesas e histórico. Esta ação é irreversível!',
-                    () => {
-                      setState(INITIAL_STATE);
-                      setView('main');
-                      setConfirmDialog(p => ({ ...p, isOpen: false }));
-                    },
-                    'danger'
-                  );
-                }}
+                onClick={resetData}
                 className="w-full flex items-center justify-center gap-2 text-sm text-red-600 font-black bg-red-50 py-4 rounded-2xl border border-red-100 hover:bg-red-100 active:scale-95 transition-all"
               >
                 <AlertCircle size={18} />
