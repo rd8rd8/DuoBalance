@@ -2,7 +2,7 @@
 
 A simple web application designed to manage shared expenses between two people, track who paid what, calculate the current balance, and keep a history of settled periods.
 
-![DuoBalance Frontend](./assets/frontend.png)
+![DuoBalance Frontend](./Duo Balance_Frontend.png)
 
 ## 🤖 AI-First Development
 
